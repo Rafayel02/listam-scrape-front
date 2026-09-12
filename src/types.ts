@@ -11,6 +11,11 @@ export interface SavedSearch {
   updatedAt: number
 }
 
+export interface ImagePhashEntry {
+  url: string
+  phash: string
+}
+
 export interface PriceHistoryEntry {
   date?: string
   price?: number
@@ -58,6 +63,7 @@ export interface Listing {
   verificationStatus?: string
   description?: string
   imageUrls?: string[]
+  imagePhashes?: ImagePhashEntry[]
   attributes?: Record<string, string>
   sourcePriceHistory?: PriceHistoryEntry[]
   postedAt?: number

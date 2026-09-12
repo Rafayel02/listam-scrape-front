@@ -2,6 +2,7 @@ import { liveQuery } from 'dexie'
 import { useEffect, useState } from 'react'
 import { countListingsNeedingDetail, db, getRunCounters } from '../db'
 import { scrapeEngine } from '../scraper/engine'
+import { hashAllCompleteListings } from '../scraper/hashListingImages'
 import {
   getSyncState,
   isBackendConfigured,
@@ -27,6 +28,8 @@ export function ScraperView() {
   const [ownerDetailNeedingCount, setOwnerDetailNeedingCount] = useState(0)
   const [syncState, setSyncState] = useState(getSyncState())
   const [syncing, setSyncing] = useState(false)
+  const [hashing, setHashing] = useState(false)
+  const [hashProgress, setHashProgress] = useState<string | null>(null)
 
   useEffect(() => {
     return subscribeSync(() => setSyncState(getSyncState()))
@@ -193,6 +196,25 @@ export function ScraperView() {
     await scrapeEngine.stop()
   }
 
+  async function hashImagesForDuplicates() {
+    setError(null)
+    setHashing(true)
+    setHashProgress('Starting…')
+    try {
+      const result = await hashAllCompleteListings((current, total, listingId) => {
+        setHashProgress(`Hashing ${current}/${total} — ${listingId}`)
+      })
+      setHashProgress(`Hashed ${result.hashed}/${result.processed} listings — syncing…`)
+      await syncAllToBackend()
+      setHashProgress(`Done — ${result.hashed} listings with hashes synced`)
+    } catch (err) {
+      setError((err as Error).message)
+      setHashProgress(null)
+    } finally {
+      setHashing(false)
+    }
+  }
+
   async function pushToBackend() {
     setError(null)
     setSyncing(true)
@@ -247,11 +269,22 @@ export function ScraperView() {
               Data syncs automatically every 3 minutes while this app is open, and again when a
               scrape completes. You can also push manually.
             </p>
+            <p className="muted small">
+              For duplicate-post detection in the visualizer, hash listing images here first
+              (browser must be open), then push to backend.
+            </p>
             <div className="btn-group" style={{ marginTop: '0.5rem' }}>
               <button
                 type="button"
+                disabled={hashing || syncing}
+                onClick={() => void hashImagesForDuplicates()}
+              >
+                {hashing ? 'Hashing…' : 'Hash images for duplicates'}
+              </button>
+              <button
+                type="button"
                 className="btn-primary"
-                disabled={syncing}
+                disabled={syncing || hashing}
                 onClick={() => void pushToBackend()}
               >
                 {syncing ? 'Syncing…' : 'Push to backend'}
@@ -265,6 +298,9 @@ export function ScraperView() {
                 </span>
               )}
             </div>
+            {hashProgress && (
+              <p className="muted small" style={{ marginTop: '0.5rem' }}>{hashProgress}</p>
+            )}
             {syncState.lastCounts && (
               <p className="muted small" style={{ marginTop: '0.5rem' }}>
                 {Object.entries(syncState.lastCounts)

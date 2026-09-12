@@ -3,6 +3,12 @@ import { existsSync, readlinkSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium, type BrowserContext, type Page } from 'playwright'
 import { isCloudflareChallenge } from '../src/shared/cloudflare.js'
+import { computePHash } from './imageHash.js'
+
+export interface ImagePhashEntry {
+  url: string
+  phash: string
+}
 
 const LOG_PREFIX = '[listam-scraper]'
 const BASE = 'https://www.list.am'
@@ -659,6 +665,33 @@ async function fetchOnDedicatedPage(path: string): Promise<FetchPageResult> {
 }
 
 /** Fetch one item page for manual testing — does not require an active scrape run. */
+/** Fetch listing images through the Playwright session (list.am blocks datacenter IPs). */
+export async function hashImagesViaBrowser(urls: string[]): Promise<ImagePhashEntry[]> {
+  const ctx = await getBrowserContext()
+  const unique = [...new Set(urls.filter((url) => url.trim().length > 0))]
+  const results: ImagePhashEntry[] = []
+
+  for (const raw of unique) {
+    const url = raw.startsWith('http') ? raw : raw.startsWith('//') ? `https:${raw}` : `${BASE}${raw}`
+    try {
+      const response = await ctx.request.get(url, {
+        headers: { Referer: `${BASE}/`, Accept: 'image/*' },
+        timeout: 25_000,
+      })
+      if (!response.ok()) {
+        logWarn(`Image fetch ${response.status()} for ${url}`)
+        continue
+      }
+      const phash = await computePHash(Buffer.from(await response.body()))
+      results.push({ url, phash })
+    } catch (err) {
+      logWarn(`Failed to hash image ${url}`, err)
+    }
+  }
+
+  return results
+}
+
 export async function scrapeItemPage(listingId: string): Promise<FetchPageResult> {
   log(`Manual item scrape: ${listingId}`)
   await getBrowserContext()

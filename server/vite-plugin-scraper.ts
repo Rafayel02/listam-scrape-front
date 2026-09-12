@@ -9,6 +9,7 @@ import {
   isScrapingEnabled,
   prepareBrowser,
   readCurrentPageHtml,
+  hashImagesViaBrowser,
   scrapeItemPage,
 } from './playwrightBrowser.js'
 
@@ -112,6 +113,34 @@ export function listamScraperPlugin(): Plugin {
             try {
               const result = await scrapeItemPage(listingId)
               sendJson(res, 200, result)
+            } catch (err) {
+              const message =
+                err instanceof BrowserProfileLockedError
+                  ? err.message
+                  : (err as Error).message
+              sendJson(res, 500, { ok: false, message })
+            }
+            return
+          }
+
+          if (req.url === '/api/dev/hash-images' && req.method === 'POST') {
+            const body = await readBody(req)
+            let urls: string[] = []
+            try {
+              const parsed = JSON.parse(body) as { urls?: string[] }
+              if (Array.isArray(parsed.urls)) urls = parsed.urls
+            } catch {
+              // use default
+            }
+
+            if (urls.length === 0) {
+              sendJson(res, 400, { ok: false, message: 'urls array is required' })
+              return
+            }
+
+            try {
+              const hashes = await hashImagesViaBrowser(urls)
+              sendJson(res, 200, { ok: true, hashes })
             } catch (err) {
               const message =
                 err instanceof BrowserProfileLockedError

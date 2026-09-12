@@ -15,6 +15,7 @@ import {
 import { fetchHtml } from '../network/fetchHtml'
 import { parseDetailPage } from '../parsers/detailPage'
 import { enrichOwnerWithProfileData } from './enrichOwner'
+import { hashAndStoreListingImages } from './hashListingImages'
 import {
   markListingFailed,
   markListingRemoved,
@@ -97,6 +98,23 @@ async function processDetailJob(
     }
 
     const result = await upsertDetailData(runId, listingId, detail)
+
+    const imageUrls = detail.imageUrls ?? []
+    if (imageUrls.length > 0) {
+      try {
+        const hashed = await hashAndStoreListingImages(listingId, imageUrls)
+        if (hashed.length > 0) {
+          await addLog(runId, 'INFO', `Detail ${listingId}: hashed ${hashed.length} image(s)`)
+        }
+      } catch (hashErr) {
+        await addLog(
+          runId,
+          'WARN',
+          `Detail ${listingId}: image hash failed — ${(hashErr as Error).message}`,
+        )
+      }
+    }
+
     await markDetailComplete(runId, listingId)
 
     const suffix =
