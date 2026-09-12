@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { scrapeEngine } from './scraper/engine'
+import { startPeriodicBackendSync, stopPeriodicBackendSync } from './sync/backendSync'
 import { ListingsView } from './views/ListingsView'
 import { ScraperView } from './views/ScraperView'
 import './App.css'
@@ -11,6 +12,8 @@ function App() {
 
   useEffect(() => {
     void scrapeEngine.init()
+    startPeriodicBackendSync()
+    return () => stopPeriodicBackendSync()
   }, [])
 
   return (

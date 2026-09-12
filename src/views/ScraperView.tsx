@@ -239,12 +239,13 @@ export function ScraperView() {
         {!isBackendConfigured() ? (
           <p className="muted small">
             Set <code>VITE_API_URL</code> and <code>VITE_INGEST_API_KEY</code> in{' '}
-            <code>.env</code> to push scraped data to Railway after each run.
+            <code>.env</code> to push scraped data to Railway every 3 minutes.
           </p>
         ) : (
           <>
             <p className="muted small">
-              Data syncs automatically when a scrape completes. You can also push manually.
+              Data syncs automatically every 3 minutes while this app is open, and again when a
+              scrape completes. You can also push manually.
             </p>
             <div className="btn-group" style={{ marginTop: '0.5rem' }}>
               <button
@@ -258,6 +259,9 @@ export function ScraperView() {
               {syncState.lastSyncAt && (
                 <span className="muted">
                   Last sync: {new Date(syncState.lastSyncAt).toLocaleString()}
+                  {syncState.nextSyncAt && (
+                    <> · Next: {new Date(syncState.nextSyncAt).toLocaleTimeString()}</>
+                  )}
                 </span>
               )}
             </div>

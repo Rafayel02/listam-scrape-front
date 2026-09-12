@@ -6,3 +6,5 @@ export const PAGE_DELAY_MS = 500
 export const DETAIL_MAX_RETRIES = 2
 /** Owners with this many scraped listings are classified as likely brokers. */
 export const BROKER_LISTING_THRESHOLD = 4
+/** Push local Dexie data to Railway on this interval while the app is open. */
+export const BACKEND_SYNC_INTERVAL_MS = 3 * 60 * 1000
