@@ -121,10 +121,6 @@ export function ScraperView() {
     })
   }, [])
 
-  const awaitingBegin =
-    activeRun?.awaitingUserReady === true &&
-    (isPreparing || activeRun.status === 'running')
-
   async function createSearch() {
     setError(null)
     if (!url.trim()) {
@@ -154,17 +150,6 @@ export function ScraperView() {
     try {
       const runId = await scrapeEngine.startNewRun(searchId)
       setFocusedRunId(runId)
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
-  async function beginScraping() {
-    if (!activeRun) return
-    setError(null)
-    setFocusedRunId(activeRun.id)
-    try {
-      await scrapeEngine.beginScraping(activeRun.id)
     } catch (err) {
       setError((err as Error).message)
     }
@@ -314,23 +299,6 @@ export function ScraperView() {
         )}
       </section>
 
-      {awaitingBegin && (
-        <section className="panel verify-panel">
-          <h3>Browser is open — ready to scrape?</h3>
-          <p className="muted small">
-            Check the browser window: if a human verification appears, complete it
-            and wait until listings load. Do not close the tab. Then click below —
-            scraping reuses this same tab (no reload of page 1).
-          </p>
-          <div className="btn-group" style={{ marginTop: '0.5rem' }}>
-            <button type="button" className="btn-primary" onClick={beginScraping}>
-              Begin Scraping
-            </button>
-            <button type="button" onClick={stopScrape}>Cancel</button>
-          </div>
-        </section>
-      )}
-
       <section className="panel">
         <h3>Backend sync</h3>
         {!isBackendConfigured() ? (
@@ -426,7 +394,6 @@ export function ScraperView() {
                     <div className="small">
                       Last run: {latest.status}
                       {latest.status === 'completed' && ' ✓'}
-                      {latest.awaitingUserReady && ' (waiting to begin)'}
                     </div>
                   )}
                 </div>
@@ -492,7 +459,7 @@ export function ScraperView() {
         </ul>
       </section>
 
-      {activeRun && !awaitingBegin && (
+      {activeRun && (
         <section className="panel">
           <h3>
             Status: {activeRun.status}

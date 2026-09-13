@@ -149,13 +149,9 @@ class ScrapeEngine {
       }
 
       try {
-        const runId = await this.startNewRun(search.id)
-        await addLog(
-          runId,
-          'INFO',
-          `${sourceLabel}: starting search ${index + 1}/${searches.length} — ${search.name || search.url}`,
-        )
-        await this.beginScraping(runId)
+        const runId = await this.startNewRun(search.id, {
+          logPrefix: `${sourceLabel}: search ${index + 1}/${searches.length}`,
+        })
         await this.waitUntilIdle()
 
         const run = await db.scrapeRuns.get(runId)
@@ -197,7 +193,10 @@ class ScrapeEngine {
     }
   }
 
-  async startNewRun(searchId: string): Promise<string> {
+  async startNewRun(
+    searchId: string,
+    options?: { logPrefix?: string },
+  ): Promise<string> {
     if (this.isRunning() || this.isPreparing()) {
       throw new Error('A scrape is already in progress')
     }
@@ -207,6 +206,7 @@ class ScrapeEngine {
 
     const runId = crypto.randomUUID()
     const startPage = getStartPage(search.url)
+    const label = search.name || search.url
 
     const run: ScrapeRun = {
       id: runId,
@@ -231,18 +231,15 @@ class ScrapeEngine {
 
     try {
       await prepareBrowser(search.url)
-      await addLog(
-        runId,
-        'INFO',
-        'Browser open — check list.am looks correct, then click Begin Scraping',
-      )
-      this.notify()
+      const prefix = options?.logPrefix ? `${options.logPrefix} — ` : ''
+      await addLog(runId, 'INFO', `${prefix}Browser ready — starting scrape for ${label}`)
+      await this.beginScraping(runId)
       return runId
     } catch (err) {
       await setRunStatus(runId, 'interrupted')
       await setAwaitingUserReady(runId, false)
       this.preparingRunId = null
-      await addLog(runId, 'ERROR', `Failed to open browser: ${(err as Error).message}`)
+      await addLog(runId, 'ERROR', `Failed to start scrape: ${(err as Error).message}`)
       this.notify()
       throw err
     }
@@ -314,12 +311,8 @@ class ScrapeEngine {
 
       try {
         await prepareBrowser(search.url)
-        await addLog(
-          runId,
-          'INFO',
-          'Browser open — check list.am looks correct, then click Begin Scraping',
-        )
-        this.notify()
+        await addLog(runId, 'INFO', 'Browser ready — resuming scrape')
+        await this.beginScraping(runId)
         return runId
       } catch (err) {
         await setRunStatus(runId, 'interrupted')
