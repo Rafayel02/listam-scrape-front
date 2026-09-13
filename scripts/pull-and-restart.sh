@@ -84,7 +84,7 @@ start_server() {
   log "Dev server pid $(cat "$PID_FILE") — logs: $DEV_LOG"
 }
 
-log "Pull and restart — $SCRAPER_DIR"
+log "Pull and restart v2 — $SCRAPER_DIR"
 
 OLD_HEAD="$(git rev-parse HEAD)"
 if ! git pull --ff-only 2>&1 | tee -a "$LOG_FILE"; then
