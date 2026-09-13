@@ -91,7 +91,7 @@ start_server() {
   log "Dev server pid $(cat "$PID_FILE") — logs: $DEV_LOG"
 }
 
-log "Pull and restart v3 — $SCRAPER_DIR"
+log "Pull and restart v4 — $SCRAPER_DIR"
 
 if ! OLD_HEAD="$(git -C "$SCRAPER_DIR" rev-parse HEAD 2>>"$LOG_FILE")"; then
   log "git rev-parse failed (macOS may be blocking access to this folder — keep the repo off Desktop/Documents)"
