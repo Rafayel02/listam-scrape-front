@@ -3,3 +3,4 @@ dist
 .env
 .listam-browser-profile
 .vercel
+.run/
