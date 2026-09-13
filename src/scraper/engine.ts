@@ -30,6 +30,23 @@ export interface ResumeOptions {
   onlyOwnerPosts?: boolean
 }
 
+export interface DailySearchResult {
+  searchId: string
+  searchName?: string
+  runId?: string
+  status: 'completed' | 'interrupted' | 'cancelled' | 'failed' | 'skipped'
+  error?: string
+}
+
+export interface DailyBatchResult {
+  started: boolean
+  reason?: string
+  completed: number
+  failed: number
+  total: number
+  results: DailySearchResult[]
+}
+
 interface RunWorkerOptions {
   skipCardCrawler?: boolean
   onlyOwnerPosts?: boolean
@@ -70,6 +87,114 @@ class ScrapeEngine {
 
   isPreparing(): boolean {
     return this.preparingRunId !== null
+  }
+
+  isBusy(): boolean {
+    return this.isRunning() || this.isPreparing()
+  }
+
+  async waitUntilIdle(): Promise<void> {
+    while (this.isPreparing()) {
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+
+    if (!this.workerPromise && this.isRunning()) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+
+    if (this.workerPromise) {
+      await this.workerPromise.catch(() => {})
+    }
+  }
+
+  async runAllSavedSearchesSequentially(options?: {
+    source?: string
+  }): Promise<DailyBatchResult> {
+    if (this.isBusy()) {
+      return {
+        started: false,
+        reason: 'A scrape is already in progress',
+        completed: 0,
+        failed: 0,
+        total: 0,
+        results: [],
+      }
+    }
+
+    const searches = await db.searches.orderBy('createdAt').toArray()
+    const results: DailySearchResult[] = []
+
+    if (searches.length === 0) {
+      return {
+        started: true,
+        completed: 0,
+        failed: 0,
+        total: 0,
+        results: [],
+      }
+    }
+
+    const sourceLabel = options?.source ?? 'scheduler'
+
+    for (let index = 0; index < searches.length; index++) {
+      const search = searches[index]
+      if (this.isBusy()) {
+        results.push({
+          searchId: search.id,
+          searchName: search.name,
+          status: 'skipped',
+          error: 'Another scrape started during the daily batch',
+        })
+        continue
+      }
+
+      try {
+        const runId = await this.startNewRun(search.id)
+        await addLog(
+          runId,
+          'INFO',
+          `${sourceLabel}: starting search ${index + 1}/${searches.length} — ${search.name || search.url}`,
+        )
+        await this.beginScraping(runId)
+        await this.waitUntilIdle()
+
+        const run = await db.scrapeRuns.get(runId)
+        const status = run?.status ?? 'failed'
+        const normalizedStatus =
+          status === 'completed' ||
+          status === 'interrupted' ||
+          status === 'cancelled'
+            ? status
+            : 'failed'
+
+        results.push({
+          searchId: search.id,
+          searchName: search.name,
+          runId,
+          status: normalizedStatus,
+        })
+      } catch (err) {
+        results.push({
+          searchId: search.id,
+          searchName: search.name,
+          status: 'failed',
+          error: (err as Error).message,
+        })
+      }
+    }
+
+    const completed = results.filter((result) => result.status === 'completed').length
+    const failed = results.filter(
+      (result) => result.status === 'failed' || result.status === 'interrupted',
+    ).length
+
+    return {
+      started: true,
+      completed,
+      failed,
+      total: searches.length,
+      results,
+    }
   }
 
   async startNewRun(searchId: string): Promise<string> {

@@ -1,7 +1,14 @@
 import { liveQuery } from 'dexie'
 import { useEffect, useState } from 'react'
 import { countListingsNeedingDetail, db, getRunCounters } from '../db'
+import {
+  formatNextDailyRun,
+  getDailyScrapeStatus,
+  runDailyScrapeBatch,
+  subscribeDailyScrapeStatus,
+} from '../scheduler/dailyScrape'
 import { scrapeEngine } from '../scraper/engine'
+import { DAILY_SCRAPE_ENABLED } from '../config'
 import { hashAllCompleteListings } from '../scraper/hashListingImages'
 import {
   getSyncState,
@@ -30,9 +37,15 @@ export function ScraperView() {
   const [syncing, setSyncing] = useState(false)
   const [hashing, setHashing] = useState(false)
   const [hashProgress, setHashProgress] = useState<string | null>(null)
+  const [dailyScrapeStatus, setDailyScrapeStatus] = useState(getDailyScrapeStatus())
+  const [dailyScrapeRunning, setDailyScrapeRunning] = useState(false)
 
   useEffect(() => {
     return subscribeSync(() => setSyncState(getSyncState()))
+  }, [])
+
+  useEffect(() => {
+    return subscribeDailyScrapeStatus(() => setDailyScrapeStatus(getDailyScrapeStatus()))
   }, [])
 
   useEffect(() => {
@@ -235,9 +248,71 @@ export function ScraperView() {
     return runs.find((r) => r.searchId === searchId)
   }
 
+  async function runDailyScrapeNow() {
+    setError(null)
+    setDailyScrapeRunning(true)
+    try {
+      const result = await runDailyScrapeBatch()
+      if (!result.started && result.reason) {
+        setError(result.reason)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setDailyScrapeRunning(false)
+    }
+  }
+
   return (
     <div className="view">
       <h2>Searches / Scraper</h2>
+
+      <section className="panel">
+        <h3>Daily auto-scrape (Yerevan)</h3>
+        {!DAILY_SCRAPE_ENABLED ? (
+          <p className="muted small">
+            Disabled. Set <code>VITE_DAILY_SCRAPE_ENABLED=true</code> in <code>.env</code> to enable.
+          </p>
+        ) : (
+          <>
+            <p className="muted small">
+              While this app is open, all saved searches run automatically once per Yerevan
+              calendar day at midnight. Searches run in saved order. Skips if a scrape is already
+              running.
+            </p>
+            <p className="muted small">
+              Next run: <strong>{formatNextDailyRun()}</strong>
+              {dailyScrapeStatus.lastRunDay && (
+                <> · Last completed day: <strong>{dailyScrapeStatus.lastRunDay}</strong></>
+              )}
+              {dailyScrapeStatus.batchInProgress && <> · Batch in progress</>}
+            </p>
+            {dailyScrapeStatus.lastResult?.started && (
+              <p className="muted small">
+                Last batch: {dailyScrapeStatus.lastResult.completed} completed,{' '}
+                {dailyScrapeStatus.lastResult.failed} failed of{' '}
+                {dailyScrapeStatus.lastResult.total} searches
+              </p>
+            )}
+            <div className="btn-group" style={{ marginTop: '0.5rem' }}>
+              <button
+                type="button"
+                disabled={
+                  dailyScrapeRunning ||
+                  dailyScrapeStatus.batchInProgress ||
+                  isRunning ||
+                  isPreparing
+                }
+                onClick={() => void runDailyScrapeNow()}
+              >
+                {dailyScrapeRunning || dailyScrapeStatus.batchInProgress
+                  ? 'Running daily batch…'
+                  : 'Run all searches now'}
+              </button>
+            </div>
+          </>
+        )}
+      </section>
 
       {awaitingBegin && (
         <section className="panel verify-panel">
