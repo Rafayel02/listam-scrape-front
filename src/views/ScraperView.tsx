@@ -344,7 +344,8 @@ export function ScraperView() {
             {hashProgress && (
               <p className="muted small" style={{ marginTop: '0.5rem' }}>{hashProgress}</p>
             )}
-            {syncState.lastCounts && (
+              {syncState.progress && <p className="muted">{syncState.progress}</p>}
+              {syncState.lastCounts && (
               <p className="muted small" style={{ marginTop: '0.5rem' }}>
                 {Object.entries(syncState.lastCounts)
                   .map(([k, v]) => `${k}: ${v}`)

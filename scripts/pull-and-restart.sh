@@ -2,8 +2,7 @@
 # Pull latest scrape-front code and restart the Vite dev server.
 #
 # Prefer launchd on macOS (cron cannot reliably access Desktop):
-#   cp scripts/com.listam.scrape-front.pull-and-restart.plist ~/Library/LaunchAgents/
-#   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.listam.scrape-front.pull-and-restart.plist
+#   ./scripts/install-launchd.sh
 #
 # Or manually:
 #   ./scripts/pull-and-restart.sh
@@ -25,6 +24,8 @@ LOG_FILE="${RUN_DIR}/pull-and-restart.log"
 DEV_LOG="${RUN_DIR}/dev.log"
 PID_FILE="${RUN_DIR}/dev.pid"
 API_STATUS="http://127.0.0.1:${PORT}/api/dev/browser/status"
+DEV_LABEL="com.listam.scrape-front.dev-server"
+UID_NUM="$(id -u)"
 
 mkdir -p "$RUN_DIR"
 
@@ -41,18 +42,15 @@ is_scraping() {
   [[ "$body" == *'"scrapingEnabled":true'* ]]
 }
 
+# Healthy only if something is actually listening on the Vite port.
 server_running() {
-  if [[ -f "$PID_FILE" ]]; then
-    local pid
-    pid="$(cat "$PID_FILE")"
-    if kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
+  command -v lsof >/dev/null 2>&1 && lsof -ti:"$PORT" >/dev/null 2>&1
+}
+
+port_pids() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti:"$PORT" 2>/dev/null || true
   fi
-  if command -v lsof >/dev/null 2>&1 && lsof -ti:"$PORT" >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
 }
 
 stop_server() {
@@ -60,23 +58,65 @@ stop_server() {
     local pid
     pid="$(cat "$PID_FILE")"
     if kill -0 "$pid" 2>/dev/null; then
-      log "Stopping dev server (pid $pid)"
+      log "Stopping tracked pid $pid"
       kill "$pid" 2>/dev/null || true
-      sleep 2
+      sleep 1
       kill -9 "$pid" 2>/dev/null || true
     fi
     rm -f "$PID_FILE"
   fi
 
-  if command -v lsof >/dev/null 2>&1; then
-    local pids
-    pids="$(lsof -ti:"$PORT" 2>/dev/null || true)"
-    if [[ -n "$pids" ]]; then
-      log "Freeing port $PORT"
-      # shellcheck disable=SC2086
-      kill -9 $pids 2>/dev/null || true
-    fi
+  local pids
+  pids="$(port_pids)"
+  if [[ -n "$pids" ]]; then
+    log "Freeing port $PORT"
+    # shellcheck disable=SC2086
+    kill -9 $pids 2>/dev/null || true
   fi
+}
+
+wait_for_port() {
+  local tries="${1:-40}"
+  local i
+  for ((i = 1; i <= tries; i++)); do
+    if server_running; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+record_listener_pid() {
+  local pids
+  pids="$(port_pids)"
+  if [[ -n "$pids" ]]; then
+    # Prefer the first listener pid for tracking.
+    echo "$pids" | awk 'NR==1{print; exit}' >"$PID_FILE"
+  fi
+}
+
+start_via_launchd() {
+  if ! launchctl print "gui/${UID_NUM}/${DEV_LABEL}" >/dev/null 2>&1; then
+    return 1
+  fi
+  log "Restarting launchd ${DEV_LABEL} (KeepAlive)"
+  # Kill + respawn so Vite picks up pulled code.
+  launchctl kickstart -k "gui/${UID_NUM}/${DEV_LABEL}" 2>/dev/null || \
+    launchctl kill SIGTERM "gui/${UID_NUM}/${DEV_LABEL}" 2>/dev/null || true
+  return 0
+}
+
+start_via_nohup() {
+  log "Starting dev server via nohup on port $PORT"
+  # Detach fully so the process survives the LaunchAgent pull job exiting.
+  (
+    cd "$SCRAPER_DIR"
+    exec nohup npm run dev >>"$DEV_LOG" 2>&1
+  ) >/dev/null 2>&1 &
+  echo $! >"$PID_FILE"
+  disown "$!" 2>/dev/null || true
+  log "Spawned pid $(cat "$PID_FILE") — logs: $DEV_LOG"
 }
 
 start_server() {
@@ -85,13 +125,51 @@ start_server() {
     exit 1
   fi
 
-  log "Starting dev server on port $PORT"
-  nohup npm run dev >>"$DEV_LOG" 2>&1 &
-  echo $! >"$PID_FILE"
-  log "Dev server pid $(cat "$PID_FILE") — logs: $DEV_LOG"
+  : >>"$DEV_LOG"
+  if start_via_launchd; then
+    :
+  else
+    start_via_nohup
+  fi
+
+  if wait_for_port 40; then
+    record_listener_pid
+    log "Dev server is listening on port $PORT (pid $(cat "$PID_FILE" 2>/dev/null || echo '?'))"
+    return 0
+  fi
+
+  log "Dev server failed to bind port $PORT — retrying after npm install"
+  stop_server
+  npm install 2>&1 | tee -a "$LOG_FILE"
+
+  if start_via_launchd; then
+    :
+  else
+    start_via_nohup
+  fi
+
+  if wait_for_port 40; then
+    record_listener_pid
+    log "Dev server is listening on port $PORT (pid $(cat "$PID_FILE" 2>/dev/null || echo '?'))"
+    return 0
+  fi
+
+  log "Dev server still not listening — last log lines:"
+  tail -40 "$DEV_LOG" 2>/dev/null | tee -a "$LOG_FILE" || true
+  exit 1
 }
 
-log "Pull and restart v4 — $SCRAPER_DIR"
+ensure_server_running() {
+  if server_running; then
+    record_listener_pid
+    log "Dev server already listening on port $PORT"
+    return 0
+  fi
+  log "Dev server was not listening on port $PORT — starting"
+  start_server
+}
+
+log "Pull and restart v6 — $SCRAPER_DIR"
 
 if ! OLD_HEAD="$(git -C "$SCRAPER_DIR" rev-parse HEAD 2>>"$LOG_FILE")"; then
   log "git rev-parse failed (macOS may be blocking access to this folder — keep the repo off Desktop/Documents)"
@@ -111,7 +189,8 @@ rm -f "$pull_out"
 NEW_HEAD="$(git -C "$SCRAPER_DIR" rev-parse HEAD)"
 
 if [[ "$OLD_HEAD" == "$NEW_HEAD" ]]; then
-  log "No code changes — server left running"
+  log "No code changes"
+  ensure_server_running
   exit 0
 fi
 
@@ -124,13 +203,14 @@ fi
 
 if is_scraping; then
   log "Scrape in progress — restart deferred until next run"
+  ensure_server_running
   exit 0
 fi
 
 if server_running; then
   stop_server
 else
-  log "Dev server was not running"
+  log "Dev server was not listening"
 fi
 
 start_server

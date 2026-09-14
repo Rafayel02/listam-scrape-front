@@ -1,4 +1,7 @@
-import { BACKEND_SYNC_INTERVAL_MS } from '../config'
+import {
+  BACKEND_SYNC_INTERVAL_MS,
+  INGEST_MAX_BATCH_BYTES,
+} from '../config'
 import { db } from '../db'
 import type { IngestPayload } from '../types'
 
@@ -8,9 +11,23 @@ export interface SyncState {
   lastError?: string
   lastCounts?: Record<string, number>
   nextSyncAt?: number
+  progress?: string
 }
 
 type SyncListener = () => void
+
+type IngestCollection = keyof IngestPayload
+
+const INGEST_COLLECTIONS: IngestCollection[] = [
+  'searches',
+  'owners',
+  'listings',
+  'searchListings',
+  'scrapeRuns',
+  'runListingStatuses',
+  'scrapeLogs',
+  'listingChanges',
+]
 
 let state: SyncState = { status: 'idle' }
 const listeners = new Set<SyncListener>()
@@ -50,6 +67,137 @@ export function subscribeSync(listener: SyncListener): () => void {
   return () => listeners.delete(listener)
 }
 
+function setProgress(progress: string): void {
+  state = { ...state, status: 'syncing', progress }
+  notify()
+}
+
+function formatIngestError(status: number, text: string): string {
+  const plain = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  if (status === 413 || /payload too large/i.test(plain)) {
+    return 'Payload Too Large'
+  }
+  return plain || `HTTP ${status}`
+}
+
+function isPayloadTooLarge(status: number, text: string): boolean {
+  return status === 413 || /payload too large/i.test(text)
+}
+
+function chunkByJsonSize<T>(items: T[], maxBytes: number): T[][] {
+  if (items.length === 0) return []
+
+  const batches: T[][] = []
+  let current: T[] = []
+  let currentBytes = 2 // []
+
+  const flush = (): void => {
+    if (current.length === 0) return
+    batches.push(current)
+    current = []
+    currentBytes = 2
+  }
+
+  for (const item of items) {
+    const encoded = JSON.stringify(item)
+
+    if (current.length === 0 && encoded.length + 2 > maxBytes) {
+      batches.push([item])
+      continue
+    }
+
+    const addBytes = encoded.length + (current.length > 0 ? 1 : 0)
+    if (current.length > 0 && currentBytes + addBytes > maxBytes) {
+      flush()
+    }
+
+    current.push(item)
+    currentBytes += encoded.length + (current.length > 1 ? 1 : 0)
+  }
+
+  flush()
+  return batches
+}
+
+function mergeCounts(
+  into: Record<string, number>,
+  from: Record<string, number> | undefined,
+): void {
+  if (!from) return
+  for (const [key, value] of Object.entries(from)) {
+    if (typeof value === 'number') {
+      into[key] = (into[key] ?? 0) + value
+    }
+  }
+}
+
+async function postIngestBatch(
+  config: { url: string; key: string },
+  payload: IngestPayload,
+): Promise<Record<string, number>> {
+  const res = await fetch(`${config.url}/api/ingest`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': config.key,
+    },
+    body: JSON.stringify(payload),
+  })
+
+  const text = await res.text()
+  if (!res.ok) {
+    const err = new Error(formatIngestError(res.status, text)) as Error & {
+      status?: number
+      payloadTooLarge?: boolean
+    }
+    err.status = res.status
+    err.payloadTooLarge = isPayloadTooLarge(res.status, text)
+    throw err
+  }
+
+  if (!text) return {}
+  try {
+    const result = JSON.parse(text) as { counts?: Record<string, number> }
+    return result.counts ?? {}
+  } catch {
+    return {}
+  }
+}
+
+async function postCollectionBatches(
+  config: { url: string; key: string },
+  collection: IngestCollection,
+  items: unknown[],
+  maxBytes: number,
+  totals: Record<string, number>,
+): Promise<void> {
+  if (items.length === 0) return
+
+  const queue = chunkByJsonSize(items, maxBytes)
+  let uploaded = 0
+
+  while (queue.length > 0) {
+    const batch = queue.shift()!
+    setProgress(
+      `Uploading ${collection}: ${Math.min(uploaded + batch.length, items.length)}/${items.length}`,
+    )
+
+    try {
+      const counts = await postIngestBatch(config, { [collection]: batch })
+      mergeCounts(totals, counts)
+      uploaded += batch.length
+    } catch (err) {
+      const error = err as Error & { payloadTooLarge?: boolean }
+      if (error.payloadTooLarge && batch.length > 1) {
+        const mid = Math.ceil(batch.length / 2)
+        queue.unshift(batch.slice(0, mid), batch.slice(mid))
+        continue
+      }
+      throw err
+    }
+  }
+}
+
 export async function syncAllToBackend(): Promise<Record<string, number>> {
   const config = apiConfig()
   if (!config) {
@@ -61,7 +209,12 @@ export async function syncAllToBackend(): Promise<Record<string, number>> {
   }
 
   syncInProgress = true
-  state = { ...state, status: 'syncing', lastError: undefined }
+  state = {
+    ...state,
+    status: 'syncing',
+    lastError: undefined,
+    progress: 'Loading local data…',
+  }
   notify()
 
   try {
@@ -85,10 +238,10 @@ export async function syncAllToBackend(): Promise<Record<string, number>> {
       db.listingChanges.toArray(),
     ])
 
-    const payload: IngestPayload = {
+    const data: Record<IngestCollection, unknown[]> = {
       searches,
-      listings,
       owners,
+      listings,
       searchListings,
       scrapeRuns,
       runListingStatuses,
@@ -96,37 +249,38 @@ export async function syncAllToBackend(): Promise<Record<string, number>> {
       listingChanges,
     }
 
-    const res = await fetch(`${config.url}/api/ingest`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': config.key,
-      },
-      body: JSON.stringify(payload),
-    })
-
-    if (!res.ok) {
-      const text = await res.text()
-      state = {
-        status: 'error',
-        lastError: text || `HTTP ${res.status}`,
-        lastSyncAt: state.lastSyncAt,
-        lastCounts: state.lastCounts,
-      }
-      scheduleNextSyncAt()
-      notify()
-      throw new Error(state.lastError)
+    const totals: Record<string, number> = {}
+    for (const collection of INGEST_COLLECTIONS) {
+      await postCollectionBatches(
+        config,
+        collection,
+        data[collection],
+        INGEST_MAX_BATCH_BYTES,
+        totals,
+      )
     }
 
-    const result = (await res.json()) as { counts: Record<string, number> }
     state = {
       status: 'ok',
       lastSyncAt: Date.now(),
-      lastCounts: result.counts,
+      lastCounts: totals,
+      progress: undefined,
     }
     scheduleNextSyncAt()
     notify()
-    return result.counts
+    return totals
+  } catch (err) {
+    const message = (err as Error).message
+    state = {
+      status: 'error',
+      lastError: message,
+      lastSyncAt: state.lastSyncAt,
+      lastCounts: state.lastCounts,
+      progress: undefined,
+    }
+    scheduleNextSyncAt()
+    notify()
+    throw err
   } finally {
     syncInProgress = false
   }
