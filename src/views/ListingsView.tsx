@@ -51,6 +51,7 @@ export function ListingsView() {
   const [changes, setChanges] = useState<ListingChange[]>([])
   const [detailFilter, setDetailFilter] = useState<DetailFilter>('all')
   const [ownerFilterId, setOwnerFilterId] = useState<string | null>(null)
+  const [districtFilter, setDistrictFilter] = useState<string | null>(null)
   const [scrapingIds, setScrapingIds] = useState<Set<string>>(new Set())
   const [scrapeErrors, setScrapeErrors] = useState<Record<string, string>>({})
 
@@ -99,6 +100,18 @@ export function ListingsView() {
     [owners],
   )
 
+  const availableDistricts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const listing of listings) {
+      const district = listing.district?.trim()
+      if (!district) continue
+      counts.set(district, (counts.get(district) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: 'base' }))
+      .map(([district, count]) => ({ district, count }))
+  }, [listings])
+
   const visibleListings = useMemo(() => {
     let rows = listings
     if (detailFilter === 'removed') {
@@ -109,8 +122,11 @@ export function ListingsView() {
     if (ownerFilterId) {
       rows = rows.filter((l) => l.ownerId === ownerFilterId)
     }
+    if (districtFilter) {
+      rows = rows.filter((l) => (l.district?.trim() ?? '') === districtFilter)
+    }
     return rows
-  }, [listings, detailFilter, ownerFilterId])
+  }, [listings, detailFilter, ownerFilterId, districtFilter])
 
   const ownerListingCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -205,7 +221,41 @@ export function ListingsView() {
         </div>
       )}
 
+      {availableDistricts.length > 0 && (
+        <div className="form-row" style={{ marginBottom: '1rem', alignItems: 'center' }}>
+          <label htmlFor="district-filter">
+            District
+            <select
+              id="district-filter"
+              value={districtFilter ?? ''}
+              onChange={(e) => setDistrictFilter(e.target.value || null)}
+              style={{ marginLeft: '0.5rem' }}
+            >
+              <option value="">All districts ({listings.length})</option>
+              {availableDistricts.map(({ district, count }) => (
+                <option key={district} value={district}>
+                  {district} ({count})
+                </option>
+              ))}
+            </select>
+          </label>
+          {districtFilter && (
+            <button type="button" onClick={() => setDistrictFilter(null)}>
+              Clear district
+            </button>
+          )}
+        </div>
+      )}
+
       {listings.length === 0 && <p className="muted">No listings stored yet.</p>}
+
+      {listings.length > 0 && (
+        <p className="muted small" style={{ marginBottom: '0.75rem' }}>
+          Showing {visibleListings.length} of {listings.length}
+          {districtFilter ? ` in ${districtFilter}` : ''}
+          {ownerFilterId ? ' (owner filtered)' : ''}
+        </p>
+      )}
 
       <div className="listings">
         {visibleListings.map((listing) => {
@@ -227,7 +277,18 @@ export function ListingsView() {
                   <span>{formatPrice(listing)}</span>
                   {listing.rooms != null && <span>{listing.rooms} rm</span>}
                   {listing.areaSqm != null && <span>{listing.areaSqm} m²</span>}
-                  {listing.district && <span>{listing.district}</span>}
+                  {listing.district && (
+                    <button
+                      type="button"
+                      className="owner-link"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setDistrictFilter(listing.district!.trim())
+                      }}
+                    >
+                      {listing.district}
+                    </button>
+                  )}
                   {listing.currentFloor != null && listing.totalFloors != null && (
                     <span>{listing.currentFloor}/{listing.totalFloors} fl</span>
                   )}
